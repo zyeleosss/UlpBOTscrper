@@ -15,7 +15,7 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot import types as bot_types
 
 # ==================== CONFIG ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "7922887920:AAENu-AGdVG4l8SQEdXCUzF9Y0TmYALnqa8")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7922887920:AAEIvhIKS4ZCwK4kFv75OgtqKvAOdd_3rdg")
 API_ID = int(os.environ.get("API_ID", 37723049))
 API_HASH = os.environ.get("API_HASH", "96cc79adf94fa7d7091223ac37521dc3")
 SESSION_STRING = os.environ.get("SESSION_STRING", "1BVtsOLMBu5BkwxfEmjGhgQgYSB82UZXelNrbYQoVL9SpeSgTBA4k58WmOcPpZ4RW9XJ5DfqA-Utg6l3IO7DVBEtHFn0pR_shrSDcc1Wj1U9nEpY5Uz0n5CdaVUDfBjKnJ3KNb0d7T1FeBlS_OY4s1af2AU_y00YqTAMi1AMGxj9wQFwRDZK2W086R7fjA11G6tvsa0prFT5krlTAeiwMvkczLzgAdbH8-jLiock8128g3l9K9j2rpSZcwT3UnEIsC2h9wd0c_aEyK4hnOQP6I_PntK-HAJVg8V_MyKrlpLqZPwlSpOTT9NA5E64SR4bLs283pf-hfSpqCDsixZ003iw5oGGtJaw=")
