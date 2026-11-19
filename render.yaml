@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: ulp-global-bot
+    env: docker
+    plan: starter # Change to your paid plan
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: SESSION_STRING
+        sync: false
