@@ -5,6 +5,7 @@ import zipfile
 import sqlite3
 import asyncio
 import rarfile
+import requests
 from pathlib import Path
 from datetime import datetime
 from telethon import TelegramClient, events, functions, types
@@ -14,7 +15,7 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot import types as bot_types
 
 # ==================== CONFIG ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "7922887920:AAFUuMkN28GhUz6mbqQC2ZXmlVseJbGFn_U")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7922887920:AAENu-AGdVG4l8SQEdXCUzF9Y0TmYALnqa8")
 API_ID = int(os.environ.get("API_ID", 37723049))
 API_HASH = os.environ.get("API_HASH", "96cc79adf94fa7d7091223ac37521dc3")
 SESSION_STRING = os.environ.get("SESSION_STRING", "1BVtsOLMBu5BkwxfEmjGhgQgYSB82UZXelNrbYQoVL9SpeSgTBA4k58WmOcPpZ4RW9XJ5DfqA-Utg6l3IO7DVBEtHFn0pR_shrSDcc1Wj1U9nEpY5Uz0n5CdaVUDfBjKnJ3KNb0d7T1FeBlS_OY4s1af2AU_y00YqTAMi1AMGxj9wQFwRDZK2W086R7fjA11G6tvsa0prFT5krlTAeiwMvkczLzgAdbH8-jLiock8128g3l9K9j2rpSZcwT3UnEIsC2h9wd0c_aEyK4hnOQP6I_PntK-HAJVg8V_MyKrlpLqZPwlSpOTT9NA5E64SR4bLs283pf-hfSpqCDsixZ003iw5oGGtJaw=")
@@ -28,6 +29,7 @@ TEMP_DIR.mkdir(exist_ok=True)
 bot = AsyncTeleBot(BOT_TOKEN)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 user_search_cache = {}
+doc_cache = {} # Memory cache to prevent get_message errors
 
 # ==================== DATABASE ====================
 def init_db():
@@ -104,7 +106,7 @@ def extract_lines(filepath):
                 yield line
     except Exception: pass
 
-# ==================== TELEBOT FRONTEND ====================
+# ==================== TELEBOT FRONTEND (LIVE PROGRESS) ====================
 @bot.message_handler(commands=['start', 'help'])
 async def send_welcome(message):
     markup = bot_types.InlineKeyboardMarkup(row_width=2)
@@ -115,7 +117,7 @@ async def send_welcome(message):
     text = (
         "🧠 **Smart AI ULP Bot**\n\n"
         "**Commands:**\n"
-        "• Send any file → Reply `/store`\n"
+        "• Send any file (<20MB) → Reply `/store`\n"
         "• `/search domain.com` → Extract lines\n"
         "• `/autofind keyword` → Auto-find & send files\n"
         "• `/fulldb` → Backup database\n\n"
@@ -125,6 +127,8 @@ async def send_welcome(message):
 
 @bot.message_handler(content_types=['document'])
 async def handle_document(message):
+    # Save to cache to avoid get_message() errors
+    doc_cache[message.message_id] = message
     markup = bot_types.InlineKeyboardMarkup()
     markup.add(bot_types.InlineKeyboardButton("💾 Store to Database", callback_data=f"store_{message.message_id}"))
     await bot.reply_to(message, "📁 File received. Click below or reply `/store`.", reply_markup=markup)
@@ -134,30 +138,48 @@ async def handle_store_command(message):
     if not message.reply_to_message or not message.reply_to_message.document:
         await bot.reply_to(message, "❌ Please reply to a file with `/store`.")
         return
+    doc_cache[message.reply_to_message.message_id] = message.reply_to_message
     await process_file_to_db(message.reply_to_message, message)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('store_'))
 async def handle_store_callback(call):
     await bot.answer_callback_query(call.id, "Processing file...")
     msg_id = int(call.data.split("_")[1])
-    try:
-        replied = await bot.get_message(call.message.chat.id, msg_id)
+    if msg_id in doc_cache:
+        replied = doc_cache[msg_id]
         await process_file_to_db(replied, call.message)
-    except Exception as e:
-        await bot.send_message(call.message.chat.id, f"❌ Error: {e}")
+    else:
+        await bot.send_message(call.message.chat.id, "❌ Session expired. Please send the file again and reply with `/store`.")
 
 async def process_file_to_db(doc_message, reply_to_msg):
     doc = doc_message.document
     file_name = doc.file_name or "unknown.txt"
     
-    status_msg = await bot.reply_to(reply_to_msg, f"⏳ Downloading `{file_name}`...", parse_mode='Markdown')
+    status_msg = await bot.reply_to(reply_to_msg, f"⏳ Downloading `{file_name}` (0%)...", parse_mode='Markdown')
     file_info = await bot.get_file(doc.file_id)
+    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
     local_path = TEMP_DIR / file_name
     
     try:
-        downloaded = await bot.download_file(file_info.file_path)
-        with open(local_path, 'wb') as new_file:
-            new_file.write(downloaded)
+        # Stream download with live progress
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        last_pct = -1
+
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        pct = int((downloaded / total_size) * 100)
+                        if pct % 10 == 0 and pct != last_pct:
+                            last_pct = pct
+                            try:
+                                await bot.edit_message_text(f"⏳ Downloading `{file_name}` ({pct}%)...", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode='Markdown')
+                            except: pass
             
         await bot.edit_message_text(f"⚙️ Processing `{file_name}`...", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode='Markdown')
         added = await asyncio.to_thread(save_to_db, list(extract_lines(local_path)), file_name)
@@ -167,6 +189,7 @@ async def process_file_to_db(doc_message, reply_to_msg):
         await bot.edit_message_text(f"❌ Error: {e}", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
     finally:
         if local_path.exists(): local_path.unlink()
+        if doc_message.message_id in doc_cache: del doc_cache[doc_message.message_id]
 
 # ==================== SMART SEARCH ====================
 @bot.message_handler(commands=['search'])
@@ -242,7 +265,7 @@ async def handle_autofind(message):
     parts = message.text.split(maxsplit=1)
     keyword = parts[1].strip() if len(parts) > 1 else "ulp"
     
-    status_msg = await bot.reply_to(message, f"🌍 AI Auto-Searching Telegram for `{keyword}`...\nThis might take a minute.", parse_mode='Markdown')
+    status_msg = await bot.reply_to(message, f"🌍 AI Auto-Searching Telegram for `{keyword}`...", parse_mode='Markdown')
     
     try:
         result = await client(functions.messages.SearchGlobalRequest(
@@ -261,10 +284,9 @@ async def handle_autofind(message):
                     os.remove(path)
 
         if not found_lines:
-            await bot.edit_message_text(f"❌ No combos found in global search for `{keyword}`.", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+            await bot.edit_message_text(f"❌ No combos found for `{keyword}`.", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
             return
 
-        # Create final file and send directly to him
         out_path = TEMP_DIR / f"autofind_{keyword}.txt"
         with open(out_path, 'w', encoding='utf-8') as f:
             for line in found_lines:
@@ -273,7 +295,7 @@ async def handle_autofind(message):
                     
         await bot.edit_message_text(f"✅ Found **{len(found_lines):,}** lines. Sending file...", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
         
-        # Send directly to Admin ID using Telethon (bypasses Bot API limits)
+        # Send directly to Admin ID using Telethon
         await client.send_file(
             ADMIN_ID, str(out_path),
             caption=f"🧠 AI Auto-Find: `{keyword}`\n📄 Lines: {len(found_lines):,}\n\n💠 {CREDIT}",
@@ -347,12 +369,54 @@ async def process_bg_file(event, filename):
         os.remove(path)
         print(f"[+] ✅ {filename} finished! Added {added:,} lines.")
 
+# ==================== JOINED GROUPS AUTO-SCANNER ====================
+async def scan_joined_groups():
+    print("🕵️ Scanning joined groups/channels for combos...")
+    dialogs = await client.get_dialogs(limit=20) # Top 20 recent chats
+    
+    found_lines = set()
+    
+    for dialog in dialogs:
+        if dialog.is_group or dialog.is_channel:
+            try:
+                async for msg in client.iter_messages(dialog.id, limit=50):
+                    if msg.text and any(c in msg.text for c in ":|,;"):
+                        for line in msg.text.split('\n'):
+                            if len(line) > 5 and any(c in line for c in ":|,;"):
+                                found_lines.add(line.strip())
+            except Exception:
+                pass
+
+    if found_lines:
+        out_path = TEMP_DIR / "group_scan.txt"
+        with open(out_path, 'w', encoding='utf-8') as f:
+            for line in found_lines:
+                f.write(line + "\n")
+                
+        await client.send_file(
+            ADMIN_ID, str(out_path),
+            caption=f"🕵️ Auto-Scanned {len(found_lines):,} lines from your joined groups!\n💠 {CREDIT}",
+            parse_mode='md'
+        )
+        if out_path.exists(): out_path.unlink()
+    else:
+        print("No logs found in joined groups.")
+
 # ==================== MAIN ====================
 async def main():
     print("Starting Telethon...")
     await client.start()
     print("Starting Telebot...")
     asyncio.create_task(bot.polling())
+    
+    # Start the background group scanner (every 10 mins)
+    async def group_scanner_loop():
+        while True:
+            await asyncio.sleep(600) # 10 minutes
+            await scan_joined_groups()
+            
+    asyncio.create_task(group_scanner_loop())
+    
     print("[+] All systems online.")
     await client.run_until_disconnected()
 
