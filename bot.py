@@ -40,7 +40,7 @@ proxy_idx = 0
 site_idx = 0
 
 user_states = {}
-pending_files = {} # Store file combos temporarily for inline buttons
+pending_files = {} # <-- Stores file_ids safely
 
 def get_next_api():
     global api_idx
@@ -80,7 +80,6 @@ def parse_combos(text):
 
 # ==================== MULTI-WORKER ENGINE ====================
 def api_worker(api_url, combo_queue, msg, progress_lock, stats, use_proxy):
-    """Each API gets its own worker thread."""
     while True:
         try:
             site, combo = combo_queue.get_nowait()
@@ -265,7 +264,7 @@ def callback_query(call):
         bot.edit_message_text(f"🌐 **Proxy Manager**\nSaved Proxies: `{len(PROXIES)}`", call.message.chat.id, call.message.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
     elif data == "proxy_upload":
         user_states[call.from_user.id] = "awaiting_proxy_file"
-        bot.edit_message_text("📤 **Send `.txt` file** with proxies (one per line).", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_proxy")))
+        bot.edit_message_text("📤 **Send `.txt` file**", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_proxy")))
     elif data == "proxy_clear":
         PROXIES = []
         save_json(PROXY_FILE, PROXIES)
@@ -284,18 +283,20 @@ def callback_query(call):
     elif data == "menu_stats":
         bot.edit_message_text(f"📊 **Stats**\n\n⚙️ APIs: `{len(API_BASES)}`\n🌐 Proxies: `{len(PROXIES)}`\n🏪 Sites: `{len(SITES)}`", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
         
-    elif data.startswith("start_np_"):
-        file_id = data.replace("start_np_", "")
-        bot.answer_callback_query(call.id, "🚀 Starting without Proxy...")
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        t = threading.Thread(target=start_bulk_by_id, args=(call.message, file_id, False))
-        t.start()
+    elif data.startswith("start_np_") or data.startswith("start_p_"):
+        is_proxy = data.startswith("start_p_")
+        msg_id = int(data.replace("start_np_", "").replace("start_p_", ""))
         
-    elif data.startswith("start_p_"):
-        file_id = data.replace("start_p_", "")
-        bot.answer_callback_query(call.id, "🌐 Starting with Proxy...")
+        file_id = pending_files.get(msg_id)
+        if not file_id:
+            bot.answer_callback_query(call.id, "❌ Session expired. Please send the file again.")
+            return
+            
+        mode = "With Proxy" if is_proxy else "No Proxy"
+        bot.answer_callback_query(call.id, f"🚀 Starting {mode}...")
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        t = threading.Thread(target=start_bulk_by_id, args=(call.message, file_id, True))
+        
+        t = threading.Thread(target=start_bulk_by_id, args=(call.message, file_id, is_proxy))
         t.start()
 
 # ==================== MESSAGE HANDLERS ====================
@@ -371,13 +372,12 @@ def handle_chk(message):
             bot.reply_to(message, "❌ File too large (Max 20MB).")
             return
             
-        # Store file info in callback data
-        file_id = doc.file_id
+        pending_files[message.message_id] = doc.file_id
         
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("🚀 Start No Proxy", callback_data=f"start_np_{file_id}"),
-            types.InlineKeyboardButton("🌐 Start With Proxy", callback_data=f"start_p_{file_id}")
+            types.InlineKeyboardButton("🚀 Start No Proxy", callback_data=f"start_np_{message.message_id}"),
+            types.InlineKeyboardButton("🌐 Start With Proxy", callback_data=f"start_p_{message.message_id}")
         )
         bot.reply_to(message, f"📁 **File Detected!**\n\nChoose how you want to check the combos:", reply_markup=markup, parse_mode='Markdown')
         return
