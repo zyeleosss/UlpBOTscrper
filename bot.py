@@ -11,7 +11,7 @@ import telebot
 from telebot import types
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "8832919810:AAEJVZjqj5H7CDj3xNSMMrUWzJKfpUm6Npc"
+BOT_TOKEN = "8832919810:AAFDVQHyMbMEc9eLWJvlPeBqvT5eEv0LJ3Y"
 ADMIN_ID = 6566026385
 
 API_FILE = "apis.json"
@@ -39,7 +39,6 @@ def load_json(file, default=[]):
 def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
-# Added your massive API list here as default
 API_BASES = load_json(API_FILE, [
     "https://shpiapi9.onrender.com",
     "https://shpiapi8.onrender.com",
@@ -118,11 +117,23 @@ def get_bin_info(cc):
 # ==================== FORMAT GENERATOR ====================
 def generate_hit_message(combo, site, res_code, price, gate, proxy="None"):
     bin_info, bank, country = get_bin_info(combo)
+    
+    if res_code == "ORDER_PAID":
+        title = "🔥 𝗖𝗛𝗔𝗥𝗚𝗘𝗗 💎"
+    elif res_code == "INSUFFICIENT_FUNDS":
+        title = "💳 𝗜𝗡𝗦𝗨𝗙𝗙𝗜𝗖𝗜𝗘𝗡𝗧 𝗙𝗨𝗡𝗗𝗦 ✅"
+    elif res_code == "3DS_REQUIRED":
+        title = "🛡️ 𝟯𝗗𝗦 𝗥𝗘𝗤𝗨𝗜𝗥𝗘𝗗 🔐"
+    elif res_code == "APPROVED":
+        title = "✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗"
+    else:
+        title = f"🔥 {res_code}"
+
     style = random.randint(1, 3)
     
     if style == 1:
         return (
-            "‍𝗖𝗮𝗿𝗱 𝗔𝗽𝗽𝗿𝗼𝘃𝗲𝗱 ✅\n\n"
+            f"{title}\n\n"
             f"[💎] 𝖢𝖺𝗋𝖽 - `{combo}`\n"
             f"[💎] 𝖦𝖺𝗍𝖾𝗐𝖺𝗒 - {gate}\n"
             f"[💎] 𝖠𝗆𝗈𝗎𝗇𝗍 - {price}$\n"
@@ -136,7 +147,7 @@ def generate_hit_message(combo, site, res_code, price, gate, proxy="None"):
         )
     elif style == 2:
         return (
-            "​𝗖𝗛𝗔𝗥𝗚𝗘𝗗 🔥 💎\n"
+            f"{title}\n"
             "╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾\n"
             f"💳 `{combo}`\n"
             "╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾╾\n"
@@ -153,7 +164,7 @@ def generate_hit_message(combo, site, res_code, price, gate, proxy="None"):
         )
     else:
         return (
-            "🔥 𝗖𝗛𝗔𝗥𝗚𝗘𝗗\n"
+            f"{title}\n"
             "━━━━━━━━━━━━━━━━━\n"
             f"Card ━ `{combo}`\n"
             f"Gateway ━ {gate}\n"
@@ -204,6 +215,7 @@ def api_worker(api_url, combo_queue, msg, progress_lock, stats, use_proxy):
             
         with progress_lock:
             stats['checked'] += 1
+            # All these responses are considered hits/live
             if res in ("ORDER_PAID", "CHARGED", "INSUFFICIENT_FUNDS", "APPROVED", "3DS_REQUIRED"):
                 stats['hits'] += 1
                 stats['hits_lines'].append(f"{site} | {combo} | {res} | {price}$ | Proxy: {proxy}\n")
