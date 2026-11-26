@@ -101,7 +101,6 @@ def check_combo(site, combo):
     return site, combo, {"Response": "TIMEOUT_ERR", "Status": "false"}
 
 def parse_combos(text):
-    # If no site is provided, we'll use the get_next_site() function later
     pattern = re.compile(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s*[|:,]\s*(\d{13,19}\|\d{1,2}\|\d{2,4}\|\d{3,4})')
     combos = set()
     for line in text.splitlines():
@@ -172,6 +171,8 @@ def start(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
+    global SITES, PROXIES, API_BASES  # FIX: Declare globals at the top of the function
+    
     data = call.data
     if call.from_user.id != ADMIN_ID and "menu" not in data:
         bot.answer_callback_query(call.id, "❌ Admin Only!")
@@ -193,7 +194,6 @@ def callback_query(call):
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
     
     elif data == "site_clear":
-        global SITES
         SITES = []
         save_json(SITE_FILE, SITES)
         bot.answer_callback_query(call.id, "✅ Sites Cleared!")
