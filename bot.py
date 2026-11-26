@@ -40,7 +40,7 @@ proxy_idx = 0
 site_idx = 0
 
 user_states = {}
-pending_files = {} # <-- Stores file_ids safely
+pending_files = {} 
 
 def get_next_api():
     global api_idx
@@ -222,6 +222,22 @@ def api_menu():
     markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="menu_main"))
     return markup
 
+# ==================== FILE HANDLER ====================
+def process_bulk_file(doc_message, reply_msg=None):
+    doc = doc_message.document
+    if doc.file_size > 20 * 1024 * 1024:
+        bot.reply_to(reply_msg or doc_message, "❌ File too large (Max 20MB).")
+        return
+        
+    pending_files[doc_message.message_id] = doc.file_id
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🚀 Start No Proxy", callback_data=f"start_np_{doc_message.message_id}"),
+        types.InlineKeyboardButton("🌐 Start With Proxy", callback_data=f"start_p_{doc_message.message_id}")
+    )
+    bot.reply_to(reply_msg or doc_message, f"📁 **File Detected!**\n\nChoose how you want to check the combos:", reply_markup=markup, parse_mode='Markdown')
+
 # ==================== BOT HANDLERS ====================
 @bot.message_handler(commands=['start', 'help'])
 def start(message):
@@ -230,7 +246,7 @@ def start(message):
         "**Commands:**\n"
         "• `/chk cc|mm|yy|cvv` → Auto-pick a random saved site\n"
         "• `/chk site.com | cc|mm|yy|cvv` → Target a specific site\n"
-        "• Reply to `.txt` with `/chk` → Bulk check (Choose Proxy/No Proxy)\n\n"
+        "• Reply to `.txt` with `/chk` OR send `.txt` with caption `/chk` → Bulk check\n\n"
         "⚙️ *Manage APIs, Proxies, and Sites below.*"
     )
     bot.reply_to(message, text, reply_markup=main_menu(), parse_mode='Markdown')
@@ -299,9 +315,13 @@ def callback_query(call):
         t = threading.Thread(target=start_bulk_by_id, args=(call.message, file_id, is_proxy))
         t.start()
 
-# ==================== MESSAGE HANDLERS ====================
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
+    # If the file has a caption /chk, trigger bulk check
+    if message.caption and message.caption.startswith('/chk'):
+        process_bulk_file(message)
+        return
+
     uid = message.from_user.id
     if user_states.get(uid) in ("awaiting_site_file", "awaiting_site"):
         user_states[uid] = None
@@ -365,21 +385,9 @@ def handle_chk(message):
         bot.reply_to(message, "❌ No APIs configured.")
         return
 
-    # BULK CHECK - Show Inline Buttons
+    # If replying to a file with /chk
     if message.reply_to_message and message.reply_to_message.document:
-        doc = message.reply_to_message.document
-        if doc.file_size > 20 * 1024 * 1024:
-            bot.reply_to(message, "❌ File too large (Max 20MB).")
-            return
-            
-        pending_files[message.message_id] = doc.file_id
-        
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton("🚀 Start No Proxy", callback_data=f"start_np_{message.message_id}"),
-            types.InlineKeyboardButton("🌐 Start With Proxy", callback_data=f"start_p_{message.message_id}")
-        )
-        bot.reply_to(message, f"📁 **File Detected!**\n\nChoose how you want to check the combos:", reply_markup=markup, parse_mode='Markdown')
+        process_bulk_file(message.reply_to_message, reply_msg=message)
         return
 
     # SINGLE CHECK
