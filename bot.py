@@ -11,7 +11,7 @@ import telebot
 from telebot import types
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "8832919810:AAFDVQHyMbMEc9eLWJvlPeBqvT5eEv0LJ3Y"
+BOT_TOKEN = "8832919810:AAEJVZjqj5H7CDj3xNSMMrUWzJKfpUm6Npc"
 ADMIN_ID = 6566026385
 
 API_FILE = "apis.json"
