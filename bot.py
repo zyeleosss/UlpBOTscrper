@@ -3,7 +3,7 @@ import re
 import io
 import time
 import json
-import asyncio
+import threading
 import requests
 import telebot
 from telebot import types
@@ -34,13 +34,13 @@ def save_json(file, data):
 
 API_BASES = load_json(API_FILE, ["https://shopify-api-b6yt.onrender.com"])
 PROXIES = load_json(PROXY_FILE, [])
-SITES = load_json(SITE_FILE, ["yeezy.com", "skims.com"]) # Default fallback sites
+SITES = load_json(SITE_FILE, ["yeezy.com", "skims.com"])
 
 api_idx = 0
 proxy_idx = 0
 site_idx = 0
 
-user_states = {} # {uid: "awaiting_api" / "awaiting_proxy_file" / "awaiting_site"}
+user_states = {} 
 
 def get_next_api():
     global api_idx
@@ -171,7 +171,7 @@ def start(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    global SITES, PROXIES, API_BASES  # FIX: Declare globals at the top of the function
+    global SITES, PROXIES, API_BASES
     
     data = call.data
     if call.from_user.id != ADMIN_ID and "menu" not in data:
@@ -180,26 +180,19 @@ def callback_query(call):
 
     if data == "menu_main":
         bot.edit_message_text("⚙️ **Main Dashboard**\nSelect an option below:", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
-    
     elif data == "menu_site":
-        bot.edit_message_text(f"🏪 **Site Manager**\nSaved Sites: `{len(SITES)}`\n\nAdd sites to automatically rotate them during checks.", call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
-
+        bot.edit_message_text(f"🏪 **Site Manager**\nSaved Sites: `{len(SITES)}`", call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
     elif data == "site_add":
         user_states[call.from_user.id] = "awaiting_site"
-        bot.edit_message_text("➕ **Send site URL**\n\nExample: `yeezy.com`\nOr reply to a `.txt` file with multiple sites.", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_site")))
-    
+        bot.edit_message_text("➕ **Send site URL**", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_site")))
     elif data == "site_list":
-        if not SITES: text = "❌ No sites saved."
-        else: text = "📜 **Saved Sites:**\n\n" + "\n".join([f"{i+1}. `{s}`" for i, s in enumerate(SITES)])
+        text = "📜 **Saved Sites:**\n\n" + "\n".join([f"{i+1}. `{s}`" for i, s in enumerate(SITES)]) if SITES else "❌ No sites saved."
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
-    
     elif data == "site_clear":
         SITES = []
         save_json(SITE_FILE, SITES)
         bot.answer_callback_query(call.id, "✅ Sites Cleared!")
-        bot.edit_message_text(f"🏪 **Site Manager**\nSaved Sites: `0`\n\nAdd sites to rotate.", call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
-
-    # --- Other Menus (API, Proxy, Stats) ---
+        bot.edit_message_text(f"🏪 **Site Manager**\nSaved Sites: `0`", call.message.chat.id, call.message.message_id, reply_markup=site_menu(), parse_mode='Markdown')
     elif data == "menu_api":
         bot.edit_message_text(f"⚙️ **API Manager**\nActive APIs: `{len(API_BASES)}`", call.message.chat.id, call.message.message_id, reply_markup=api_menu(), parse_mode='Markdown')
     elif data == "api_add":
@@ -208,12 +201,11 @@ def callback_query(call):
     elif data == "api_list":
         text = "📜 **Saved APIs:**\n\n" + "\n".join([f"{i+1}. `{a}`" for i, a in enumerate(API_BASES)]) if API_BASES else "❌ No APIs saved."
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=api_menu(), parse_mode='Markdown')
-
     elif data == "menu_proxy":
         bot.edit_message_text(f"🌐 **Proxy Manager**\nLive Proxies: `{len(PROXIES)}`", call.message.chat.id, call.message.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
     elif data == "proxy_upload":
         user_states[call.from_user.id] = "awaiting_proxy_file"
-        bot.edit_message_text("📤 **Send `.txt` file** with proxies (one per line).", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_proxy")))
+        bot.edit_message_text("📤 **Send `.txt` file**", call.message.chat.id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ Cancel", callback_data="menu_proxy")))
     elif data == "proxy_clear":
         PROXIES = []
         save_json(PROXY_FILE, PROXIES)
@@ -229,97 +221,67 @@ def callback_query(call):
         PROXIES = live
         save_json(PROXY_FILE, PROXIES)
         bot.edit_message_text(f"✅ **Done!**\nLive Proxies: `{len(PROXIES)}`", msg.chat.id, msg.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
-
     elif data == "menu_stats":
         bot.edit_message_text(f"📊 **Stats**\n\n⚙️ APIs: `{len(API_BASES)}`\n🌐 Proxies: `{len(PROXIES)}`\n🏪 Sites: `{len(SITES)}`", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode='Markdown')
 
 # ==================== MESSAGE HANDLERS ====================
-@bot.message_handler(commands=['addsite'])
-def cmd_addsite(message):
-    if message.from_user.id != ADMIN_ID: return
-    if message.reply_to_message and message.reply_to_message.document:
-        user_states[message.from_user.id] = "awaiting_site_file"
-        message.document = message.reply_to_message.document
-        handle_document(message)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Usage: `/addsite site.com` or reply to `.txt` file.")
-        return
-    url = parts[1].strip().lower()
-    if url not in SITES:
-        SITES.append(url)
-        save_json(SITE_FILE, SITES)
-        bot.reply_to(message, f"✅ Added `{url}`.\nTotal Sites: `{len(SITES)}`", parse_mode='Markdown')
-    else:
-        bot.reply_to(message, "⚠️ Site already exists.")
-
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     uid = message.from_user.id
     if user_states.get(uid) in ("awaiting_site_file", "awaiting_site"):
         user_states[uid] = None
-        msg = bot.reply_to(message, "⏳ Downloading and parsing sites...")
+        msg = bot.reply_to(message, "⏳ Parsing sites...")
         try:
             file_info = bot.get_file(message.document.file_id)
             content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
             lines = [line.strip().lower() for line in content.splitlines() if line.strip()]
-            
             added = 0
             for s in lines:
                 if s not in SITES:
                     SITES.append(s)
                     added += 1
             save_json(SITE_FILE, SITES)
-            bot.edit_message_text(f"✅ Added `{added}` new sites.\nTotal: `{len(SITES)}`", msg.chat.id, msg.message_id, reply_markup=site_menu(), parse_mode='Markdown')
+            bot.edit_message_text(f"✅ Added `{added}` sites.\nTotal: `{len(SITES)}`", msg.chat.id, msg.message_id, reply_markup=site_menu(), parse_mode='Markdown')
         except Exception as e:
             bot.edit_message_text(f"❌ Error: {e}", msg.chat.id, msg.message_id)
         return
 
     if user_states.get(uid) == "awaiting_proxy_file":
         user_states[uid] = None
-        msg = bot.reply_to(message, "⏳ Downloading and parsing proxies...")
+        msg = bot.reply_to(message, "⏳ Parsing proxies...")
         try:
             file_info = bot.get_file(message.document.file_id)
             content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
             lines = [line.strip() for line in content.splitlines() if line.strip()]
-            
             added = 0
             for p in lines:
                 if p not in PROXIES:
                     PROXIES.append(p)
                     added += 1
             save_json(PROXY_FILE, PROXIES)
-            bot.edit_message_text(f"✅ Added `{added}` new proxies.\nTotal: `{len(PROXIES)}`", msg.chat.id, msg.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
+            bot.edit_message_text(f"✅ Added `{added}` proxies.\nTotal: `{len(PROXIES)}`", msg.chat.id, msg.message_id, reply_markup=proxy_menu(), parse_mode='Markdown')
         except Exception as e:
             bot.edit_message_text(f"❌ Error: {e}", msg.chat.id, msg.message_id)
         return
 
 @bot.message_handler(func=lambda msg: user_states.get(msg.from_user.id) == "awaiting_site")
 def handle_site_input(message):
-    uid = message.from_user.id
-    user_states[uid] = None
+    user_states[message.from_user.id] = None
     url = message.text.strip().lower()
     if url not in SITES:
         SITES.append(url)
         save_json(SITE_FILE, SITES)
-        bot.reply_to(message, f"✅ Added `{url}`.\nTotal Sites: `{len(SITES)}`", reply_markup=site_menu(), parse_mode='Markdown')
-    else:
-        bot.reply_to(message, "⚠️ Site already exists.", reply_markup=site_menu())
+        bot.reply_to(message, f"✅ Added `{url}`.", reply_markup=site_menu(), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: user_states.get(msg.from_user.id) == "awaiting_api")
 def handle_api_input(message):
-    uid = message.from_user.id
-    user_states[uid] = None
+    user_states[message.from_user.id] = None
     url = message.text.strip()
     if not url.startswith("http"): url = "https://" + url
     if url not in API_BASES:
         API_BASES.append(url)
         save_json(API_FILE, API_BASES)
-        bot.reply_to(message, f"✅ API Added!\nTotal: `{len(API_BASES)}`", reply_markup=api_menu(), parse_mode='Markdown')
-    else:
-        bot.reply_to(message, "⚠️ API already exists.", reply_markup=api_menu())
+        bot.reply_to(message, f"✅ API Added!", reply_markup=api_menu(), parse_mode='Markdown')
 
 # ==================== CHECK COMMANDS ====================
 @bot.message_handler(commands=['chk'])
@@ -328,16 +290,14 @@ def handle_chk(message):
         bot.reply_to(message, "❌ No APIs configured.")
         return
 
+    # BULK CHECK
     if message.reply_to_message and message.reply_to_message.document:
         doc = message.reply_to_message.document
-        file_name = doc.file_name or "combo.txt"
-        
         if doc.file_size > 20 * 1024 * 1024:
             bot.reply_to(message, "❌ File too large (Max 20MB).")
             return
             
-        msg = bot.reply_to(message, f"⏳ Downloading `{file_name}`...", parse_mode='Markdown')
-        
+        msg = bot.reply_to(message, "⏳ Downloading...", parse_mode='Markdown')
         try:
             file_info = bot.get_file(doc.file_id)
             content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
@@ -348,19 +308,23 @@ def handle_chk(message):
                 return
                 
             bot.edit_message_text(f"🚀 Checking **{len(combos):,}** combos with {MAX_THREADS} threads...", chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
-            asyncio.run_coroutine_threadsafe(process_bulk(msg, combos), bot.loop)
+            
+            # START BULK THREAD
+            t = threading.Thread(target=process_bulk_thread, args=(msg, combos))
+            t.start()
+            
         except Exception as e:
             bot.edit_message_text(f"❌ Error: {e}", chat_id=msg.chat.id, message_id=msg.message_id)
         return
 
+    # SINGLE CHECK
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2: return
     combos = parse_combos(parts[1])
     if not combos: return
         
     site, combo = combos[0]
-    if site == "RANDOM_SITE":
-        site = get_next_site()
+    if site == "RANDOM_SITE": site = get_next_site()
         
     msg = bot.reply_to(message, f"🔍 Checking `{site}`...", parse_mode='Markdown')
     _, _, result = check_combo(site, combo)
@@ -372,13 +336,12 @@ def handle_chk(message):
     text = f"{emoji} **Status:** `{res}`\n🌐 Site: `{site}`\n💳 Card: `{combo}`\n💰 Price: `{price}`\n\n💠 {CREDIT}"
     bot.edit_message_text(text, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
 
-async def process_bulk(msg, combos):
+def process_bulk_thread(msg, combos):
     total = len(combos)
     checked, hits, charged, bad = 0, 0, 0, 0
     
     hits_file, charged_file = io.StringIO(), io.StringIO()
     start_time, last_update = time.time(), time.time()
-    loop = asyncio.get_event_loop()
     
     def update_progress():
         nonlocal last_update
@@ -422,7 +385,7 @@ async def process_bulk(msg, combos):
                 bad += 1
                 
             if checked % 10 == 0 or checked == total:
-                await loop.run_in_executor(None, update_progress)
+                update_progress()
 
     summary = f"✅ **Done!**\n\nTotal: `{total:,}`\nCharged: `{charged:,}`\nHits: `{hits:,}`\nBad: `{bad:,}`\n\n💠 {CREDIT}"
     bot.edit_message_text(summary, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode='Markdown')
